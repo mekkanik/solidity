@@ -305,6 +305,19 @@ BOOST_AUTO_TEST_CASE(balance_invalid)
 	CHECK_ERROR(text, TypeError, "Expression has to be an lvalue.");
 }
 
+BOOST_AUTO_TEST_CASE(exponent_overflow)
+{
+	char const* text = R"(
+		contract SimpleStorage {
+			function bignum() {
+				uint c;
+				c=1E1251;
+			}
+		}
+	)";
+	CHECK_ERROR(text, TypeError, "Invalid literal value.");
+}
+
 BOOST_AUTO_TEST_CASE(assignment_to_mapping)
 {
 	char const* text = R"(
