@@ -669,10 +669,8 @@ tuple<bool, rational> RationalNumberType::isValidLiteral(Literal const& _literal
 			// parse the exponent
 			bigint exp = bigint(string(expPoint + 1, _literal.value().end()));
 
-			// SOL-008: Huge values for exponent are causing a crash. Limiting maximum to rational(1) << 4096
-			// 1<<1024 = 1.7977^308. Extrapolating for 1<<4096, the exponent value will approximately be 1232.
-			// However, it does appear that values in excess of E77 will still cause casting errors.
-			if (exp > 1232 || exp < -1232)
+			// SOL-008: disallow gigantic exponents to limit memory consumption
+			if (abs(exp) > 1250)
 				return make_tuple(false, rational(0));
 
 			// parse the base
