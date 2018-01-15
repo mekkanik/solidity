@@ -37,7 +37,8 @@ namespace assembly
 class Parser: public ParserBase
 {
 public:
-	explicit Parser(ErrorReporter& _errorReporter, bool _julia = false): ParserBase(_errorReporter), m_julia(_julia) {}
+	explicit Parser(ErrorReporter& _errorReporter, AsmFlavour _flavour = AsmFlavour::Loose):
+		ParserBase(_errorReporter), m_flavour(_flavour) {}
 
 	/// Parses an inline assembly block starting with `{` and ending with `}`.
 	/// @returns an empty shared pointer on error.
@@ -70,7 +71,10 @@ protected:
 	assembly::Expression parseExpression();
 	static std::map<std::string, dev::solidity::Instruction> const& instructions();
 	static std::map<dev::solidity::Instruction, std::string> const& instructionNames();
-	ElementaryOperation parseElementaryOperation(bool _onlySinglePusher = false);
+	/// Parses an elementary operation, i.e. a literal, identifier or instruction.
+	/// This will parse instructions even in strict mode as part of the full parser
+	/// for FunctionalInstruction.
+	ElementaryOperation parseElementaryOperation();
 	VariableDeclaration parseVariableDeclaration();
 	FunctionDefinition parseFunctionDefinition();
 	assembly::Expression parseCall(ElementaryOperation&& _initialOp);
@@ -80,7 +84,7 @@ protected:
 	static bool isValidNumberLiteral(std::string const& _literal);
 
 private:
-	bool m_julia = false;
+	AsmFlavour m_flavour = AsmFlavour::Loose;
 };
 
 }

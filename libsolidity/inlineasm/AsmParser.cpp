@@ -103,14 +103,14 @@ assembly::Statement Parser::parseStatement()
 		return parseForLoop();
 	case Token::Assign:
 	{
-		if (m_julia)
+		if (m_flavour != AsmFlavour::Loose)
 			break;
 		assembly::StackAssignment assignment = createWithLocation<assembly::StackAssignment>();
 		advance();
 		expectToken(Token::Colon);
 		assignment.variableName.location = location();
 		assignment.variableName.name = currentLiteral();
-		if (!m_julia && instructions().count(assignment.variableName.name))
+		if (instructions().count(assignment.variableName.name))
 			fatalParserError("Identifier expected, got instruction name.");
 		assignment.location.end = endPosition();
 		expectToken(Token::Identifier);
@@ -123,7 +123,7 @@ assembly::Statement Parser::parseStatement()
 	// Simple instruction (might turn into functional),
 	// literal,
 	// identifier (might turn into label or functional assignment)
-	ElementaryOperation elementary(parseElementaryOperation(false));
+	ElementaryOperation elementary(parseElementaryOperation());
 	switch (currentToken())
 	{
 	case Token::LParen:
@@ -145,7 +145,7 @@ assembly::Statement Parser::parseStatement()
 		do
 		{
 			expectToken(Token::Comma);
-			elementary = parseElementaryOperation(false);
+			elementary = parseElementaryOperation();
 			if (elementary.type() != typeid(assembly::Identifier))
 				fatalParserError("Variable name expected in multiple assignemnt.");
 			assignment.variableNames.emplace_back(boost::get<assembly::Identifier>(elementary));
@@ -170,7 +170,7 @@ assembly::Statement Parser::parseStatement()
 		if (currentToken() == Token::Assign && peekNextToken() != Token::Colon)
 		{
 			assembly::Assignment assignment = createWithLocation<assembly::Assignment>(identifier.location);
-			if (!m_julia && instructions().count(identifier.name))
+			if (m_flavour != AsmFlavour::IULIA && instructions().count(identifier.name))
 				fatalParserError("Cannot use instruction names for identifier names.");
 			advance();
 			assignment.variableNames.emplace_back(identifier);
@@ -181,7 +181,7 @@ assembly::Statement Parser::parseStatement()
 		else
 		{
 			// label
-			if (m_julia)
+			if (m_flavour != AsmFlavour::Loose)
 				fatalParserError("Labels are not supported.");
 			Label label = createWithLocation<Label>(identifier.location);
 			label.name = identifier.name;
@@ -189,7 +189,7 @@ assembly::Statement Parser::parseStatement()
 		}
 	}
 	default:
-		if (m_julia)
+		if (m_flavour != AsmFlavour::Loose)
 			fatalParserError("Call or assignment expected.");
 		break;
 	}
@@ -247,10 +247,29 @@ assembly::ForLoop Parser::parseForLoop()
 assembly::Expression Parser::parseExpression()
 {
 	RecursionGuard recursionGuard(*this);
-	ElementaryOperation operation = parseElementaryOperation(true);
+	// In strict mode, this might parse a plain Instruction, but
+	// it will be converted to a FunctionalInstruction inside
+	// parseCall below.
+	ElementaryOperation operation = parseElementaryOperation();
 	if (operation.type() == typeid(Instruction))
 	{
 		Instruction const& instr = boost::get<Instruction>(operation);
+		// Disallow instructions returning multiple values (and DUP/SWAP) as expression.
+		if (
+			instructionInfo(instr.instruction).ret != 1 ||
+			isDupInstruction(instr.instruction) ||
+			isSwapInstruction(instr.instruction)
+		)
+			fatalParserError(
+				"Instruction \"" +
+				instructionNames().at(instr.instruction) +
+				"\" not allowed in this context."
+			);
+		if (m_flavour != AsmFlavour::Loose && currentToken() != Token::LParen)
+			fatalParserError(
+				"Non-functional instructions are not allowed in this context."
+			);
+		// Enforce functional notation for instructions requiring multiple arguments.
 		int args = instructionInfo(instr.instruction).args;
 		if (args > 0 && currentToken() != Token::LParen)
 			fatalParserError(string(
@@ -265,6 +284,8 @@ assembly::Expression Parser::parseExpression()
 		return parseCall(std::move(operation));
 	else if (operation.type() == typeid(Instruction))
 	{
+		// Instructions not taking arguments are allowed as expressions.
+		solAssert(m_flavour == AsmFlavour::Loose, "");
 		Instruction& instr = boost::get<Instruction>(operation);
 		return FunctionalInstruction{std::move(instr.location), instr.instruction, {}};
 	}
@@ -317,7 +338,7 @@ std::map<dev::solidity::Instruction, string> const& Parser::instructionNames()
 	return s_instructionNames;
 }
 
-Parser::ElementaryOperation Parser::parseElementaryOperation(bool _onlySinglePusher)
+Parser::ElementaryOperation Parser::parseElementaryOperation()
 {
 	RecursionGuard recursionGuard(*this);
 	ElementaryOperation ret;
@@ -338,15 +359,9 @@ Parser::ElementaryOperation Parser::parseElementaryOperation(bool _onlySinglePus
 		else
 			literal = currentLiteral();
 		// first search the set of instructions.
-		if (!m_julia && instructions().count(literal))
+		if (m_flavour != AsmFlavour::IULIA && instructions().count(literal))
 		{
 			dev::solidity::Instruction const& instr = instructions().at(literal);
-			if (_onlySinglePusher)
-			{
-				InstructionInfo info = dev::solidity::instructionInfo(instr);
-				if (info.ret != 1)
-					fatalParserError("Instruction \"" + literal + "\" not allowed in this context.");
-			}
 			ret = Instruction{location(), instr};
 		}
 		else
@@ -385,7 +400,7 @@ Parser::ElementaryOperation Parser::parseElementaryOperation(bool _onlySinglePus
 			""
 		};
 		advance();
-		if (m_julia)
+		if (m_flavour == AsmFlavour::IULIA)
 		{
 			expectToken(Token::Colon);
 			literal.location.end = endPosition();
@@ -398,7 +413,7 @@ Parser::ElementaryOperation Parser::parseElementaryOperation(bool _onlySinglePus
 	}
 	default:
 		fatalParserError(
-			m_julia ?
+			m_flavour == AsmFlavour::IULIA ?
 			"Literal or identifier expected." :
 			"Literal, identifier or instruction expected."
 		);
@@ -468,7 +483,7 @@ assembly::Expression Parser::parseCall(Parser::ElementaryOperation&& _initialOp)
 	RecursionGuard recursionGuard(*this);
 	if (_initialOp.type() == typeid(Instruction))
 	{
-		solAssert(!m_julia, "Instructions are invalid in JULIA");
+		solAssert(m_flavour != AsmFlavour::IULIA, "Instructions are invalid in JULIA");
 		Instruction& instruction = boost::get<Instruction>(_initialOp);
 		FunctionalInstruction ret;
 		ret.instruction = instruction.instruction;
@@ -539,7 +554,7 @@ assembly::Expression Parser::parseCall(Parser::ElementaryOperation&& _initialOp)
 	}
 	else
 		fatalParserError(
-			m_julia ?
+			m_flavour == AsmFlavour::IULIA ?
 			"Function name expected." :
 			"Assembly instruction or function name required in front of \"(\")"
 		);
@@ -552,7 +567,7 @@ TypedName Parser::parseTypedName()
 	RecursionGuard recursionGuard(*this);
 	TypedName typedName = createWithLocation<TypedName>();
 	typedName.name = expectAsmIdentifier();
-	if (m_julia)
+	if (m_flavour == AsmFlavour::IULIA)
 	{
 		expectToken(Token::Colon);
 		typedName.location.end = endPosition();
@@ -564,12 +579,18 @@ TypedName Parser::parseTypedName()
 string Parser::expectAsmIdentifier()
 {
 	string name = currentLiteral();
-	if (m_julia)
+	if (m_flavour == AsmFlavour::IULIA)
 	{
-		if (currentToken() == Token::Bool)
+		switch (currentToken())
 		{
+		case Token::Return:
+		case Token::Byte:
+		case Token::Address:
+		case Token::Bool:
 			advance();
 			return name;
+		default:
+			break;
 		}
 	}
 	else if (instructions().count(name))
