@@ -669,14 +669,30 @@ tuple<bool, rational> RationalNumberType::isValidLiteral(Literal const& _literal
 			// parse the exponent
 			bigint exp = bigint(string(expPoint + 1, _literal.value().end()));
 
-			// SOL-008: disallow gigantic exponents to limit memory consumption
-			if (abs(exp) > 1250)
-				return make_tuple(false, rational(0));
-
 			// parse the base
 			tuple<bool, rational> base = parseRational(string(_literal.value().begin(), expPoint));
 			if (!get<0>(base))
 				return make_tuple(false, rational(0));
+
+			// SOL-008: disallow gigantic exponents to limit memory consumption. Number of places limited to e+1250.
+			bigint numPlaces = distance(_literal.value().begin(), expPoint) + abs(exp);
+			auto decimalPoint = find(_literal.value().begin(), expPoint, '.');
+			if(decimalPoint != _literal.value().end())
+			{
+				// a.bE+c	=> len(a) + max(len(b), abs(c))
+				// a.bE-c	=> len(b) + max(len(a), abs(c))
+
+				numPlaces = (exp > 0) ? distance(_literal.value().begin(), decimalPoint) : distance(decimalPoint, expPoint);
+				bigint adjustment	= (exp > 0 ) ? distance(decimalPoint, expPoint) : distance(_literal.value().begin(), decimalPoint);
+				if(abs(exp) >= adjustment)
+					numPlaces += abs(exp);
+				else
+					numPlaces += adjustment;
+			}
+
+			if (numPlaces > 1250)
+				return make_tuple(false, rational(0));
+
 			value = get<1>(base);
 
 			if (exp < 0)
